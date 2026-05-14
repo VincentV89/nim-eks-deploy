@@ -1,3 +1,6 @@
-region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+region                  = "us-east-1"
+ngc_api_key             = "nvapi-your-ngc-api-key-here"
+sagemaker_instance_type = "ml.g5.xlarge"
+min_instance_count      = 1
+max_instance_count      = 3
+model_name              = "nim-llama-3-1-8b"
