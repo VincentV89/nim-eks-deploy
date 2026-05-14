@@ -1,71 +1,92 @@
-# NVIDIA NIM on Amazon EKS
+# NVIDIA NIM on Amazon SageMaker
 
-Deploy Llama 3.1 8B Instruct via NVIDIA NIM on EKS with GPU autoscaling. (edited)
+Deploy **Llama 3.1 8B Instruct** via NVIDIA NIM on Amazon SageMaker with autoscaling.
 
 ## Architecture
 
 ```
-User → ALB → NIM Pod(s) on g5.xlarge (A10G GPU)
-                  ↑
-            HPA scales on GPU utilization (DCGM metrics)
+User -> SageMaker Endpoint -> NIM Container on ml.g5.xlarge (A10G GPU)
+                                    ^
+                               Autoscaling on InvocationsPerInstance
 ```
 
-**Stack:** Terraform (infra) → kubectl (NIM) → Helm (GPU monitoring) → HPA (autoscale)
+**Stack:** Terraform (infra + endpoint) -> AWS CLI (wait/test)
 
 ## Prerequisites
 
-- AWS CLI configured with admin-level permissions
-- `terraform`, `kubectl`, `helm` installed
-- [NVIDIA NGC API Key](https://org.ngc.nvidia.com/) (free — needed to pull NIM images)
-- ~$3.50/hr budget (one g5.xlarge on-demand)
+| Tool | Purpose |
+|------|---------|
+| [Terraform](https://terraform.io) >= 1.5 | Provision SageMaker resources |
+| [AWS CLI](https://aws.amazon.com/cli/) v2 | Wait for endpoint, invoke for testing |
+| Python 3.9+ with boto3 | Load testing via SageMaker runtime API |
+| NGC API Key | Access NVIDIA NIM container images ([get one here](https://org.ngc.nvidia.com/setup)) |
 
-## Deploy (15 minutes)
+> **Budget note:** ml.g5.xlarge costs approximately $3.50/hr while the endpoint is active.
+
+## Deploy
+
+1. Configure your variables:
 
 ```bash
-# 1. Infrastructure
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # edit with your values
-terraform init && terraform apply
-
-# 2. Connect kubectl
-aws eks update-kubeconfig --name nim-demo --region us-east-1
-
-# 3. Deploy NIM + monitoring + autoscaling
-cd ..
-./scripts/deploy.sh <your-ngc-api-key>
-
-# 4. Test it
-export NIM_URL=$(kubectl get svc nim-llm -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-curl -s http://$NIM_URL:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"meta/llama-3.1-8b-instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars and set your ngc_api_key
 ```
 
-## Load Test (demo autoscaling)
+2. Run the deploy script:
 
 ```bash
-pip install aiohttp
-python scripts/load_test.py http://$NIM_URL:8000 --rps 20 --duration 120
+./scripts/deploy.sh <YOUR_NGC_API_KEY>
 ```
 
-Watch pods scale: `kubectl get hpa nim-llm -w`
+This will:
+- Run `terraform init` and `terraform apply`
+- Wait for the SageMaker endpoint to reach InService status
+- Print the endpoint name and a sample invocation command
+
+## Test
+
+Invoke the endpoint directly with the AWS CLI:
+
+```bash
+aws sagemaker-runtime invoke-endpoint \
+  --endpoint-name <ENDPOINT_NAME> \
+  --content-type application/json \
+  --body '{"model":"meta/llama-3.1-8b-instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' \
+  /dev/stdout
+```
+
+## Load Test
+
+Run the load test script against your SageMaker endpoint:
+
+```bash
+# SageMaker mode (recommended)
+python scripts/load_test.py --endpoint-name <ENDPOINT_NAME> --rps 10 --duration 60
+
+# Direct HTTP mode (if testing via API Gateway or local)
+python scripts/load_test.py http://<URL>:8000 --rps 10 --duration 60
+```
+
+The script reports p50, p95, p99 latency and throughput (req/s).
 
 ## Teardown
 
 ```bash
-cd terraform && terraform destroy
+cd terraform
+terraform destroy
 ```
 
 ## CI/CD
 
-This repo includes a GitHub Actions workflow (`.github/workflows/kiro-review.yml`) that uses [Kiro CLI headless mode](https://kiro.dev/docs/cli/headless/) to automatically review infrastructure changes on every PR. See the workflow file for details.
+Pull requests that modify `terraform/**` or `scripts/**` trigger the **Kiro Infrastructure Review** workflow, which performs automated security and configuration analysis.
 
 ## Key Concepts
 
-| Concept | Where it appears | Why it matters |
-|---------|-----------------|----------------|
-| TensorRT-LLM engine compilation | Inside NIM container (automatic) | Optimizes model for A10G architecture |
-| KV cache management | NIM runtime | Enables concurrent request serving |
-| Continuous batching | NIM inference server | Keeps GPU saturated under load |
-| GPU-aware autoscaling | `k8s/nim-hpa.yaml` | Scales on real GPU utilization, not CPU |
-| Infrastructure as Code | `terraform/` | Reproducible, version-controlled infra |
+| Concept | Description |
+|---------|-------------|
+| Managed GPU Hosting | SageMaker provisions and manages GPU instances (ml.g5.xlarge with A10G) |
+| Autoscaling Policy | Target-tracking policy scales instances based on InvocationsPerInstance metric |
+| Endpoint Variants | Production variants allow traffic splitting and canary deployments |
+| Container Serving | NIM container from nvcr.io runs the optimized TensorRT-LLM engine |
+| Infrastructure as Code | Terraform manages all resources: IAM role, model, endpoint config, endpoint, autoscaling |
