@@ -29,9 +29,80 @@ resource "aws_iam_role" "sagemaker_execution" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "sagemaker_full_access" {
-  role       = aws_iam_role.sagemaker_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess"
+resource "aws_iam_role_policy" "sagemaker_scoped" {
+  name = "${local.name}-sagemaker-scoped"
+  role = aws_iam_role.sagemaker_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SageMakerModelEndpoint"
+        Effect = "Allow"
+        Action = [
+          "sagemaker:CreateModel",
+          "sagemaker:DescribeModel",
+          "sagemaker:DeleteModel",
+          "sagemaker:CreateEndpointConfig",
+          "sagemaker:DescribeEndpointConfig",
+          "sagemaker:DeleteEndpointConfig",
+          "sagemaker:CreateEndpoint",
+          "sagemaker:DescribeEndpoint",
+          "sagemaker:DeleteEndpoint",
+          "sagemaker:UpdateEndpoint",
+          "sagemaker:InvokeEndpoint",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRImagePull"
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "CloudWatchLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+        ]
+        Resource = "arn:aws:logs:*:*:log-group:/aws/sagemaker/*"
+      },
+      {
+        Sid    = "CloudWatchMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "/aws/sagemaker/Endpoints"
+          }
+        }
+      },
+      {
+        Sid    = "VPCNetworking"
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
 }
 
 # --- SageMaker Model ---
@@ -40,8 +111,13 @@ resource "aws_sagemaker_model" "nim" {
   execution_role_arn = aws_iam_role.sagemaker_execution.arn
 
   primary_container {
+    # For production, pin to a specific image digest (e.g., nvcr.io/nim/meta/llama-3.1-8b-instruct@sha256:...)
+    # to ensure reproducible deployments.
     image = "nvcr.io/nim/meta/llama-3.1-8b-instruct:latest"
 
+    # NOTE: NGC_API_KEY will be stored in Terraform state in plaintext because
+    # the SageMaker model resource requires environment variables directly.
+    # Use a remote backend with encryption (e.g., S3 with SSE) to protect state.
     environment = {
       NGC_API_KEY   = var.ngc_api_key
       NIM_MODEL_NAME = var.model_name

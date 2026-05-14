@@ -11,6 +11,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -21,7 +22,7 @@ PAYLOAD = {
 }
 
 
-def invoke_sagemaker(client, endpoint_name, stats):
+def invoke_sagemaker(client, endpoint_name, stats, lock):
     """Invoke a SageMaker endpoint using boto3."""
     t0 = time.monotonic()
     try:
@@ -32,10 +33,12 @@ def invoke_sagemaker(client, endpoint_name, stats):
         )
         response["Body"].read()
         latency = time.monotonic() - t0
-        stats["ok"] += 1
-        stats["latencies"].append(latency)
+        with lock:
+            stats["ok"] += 1
+            stats["latencies"].append(latency)
     except Exception:
-        stats["err"] += 1
+        with lock:
+            stats["err"] += 1
 
 
 def run_sagemaker_load_test(endpoint_name, region, rps, duration):
@@ -44,13 +47,14 @@ def run_sagemaker_load_test(endpoint_name, region, rps, duration):
 
     client = boto3.client("sagemaker-runtime", region_name=region)
     stats = {"ok": 0, "err": 0, "latencies": []}
+    lock = threading.Lock()
     interval = 1.0 / rps
     end = time.monotonic() + duration
 
     futures = []
     with ThreadPoolExecutor(max_workers=rps * 2) as executor:
         while time.monotonic() < end:
-            futures.append(executor.submit(invoke_sagemaker, client, endpoint_name, stats))
+            futures.append(executor.submit(invoke_sagemaker, client, endpoint_name, stats, lock))
             time.sleep(interval)
         # Wait for all futures to complete
         for f in futures:
