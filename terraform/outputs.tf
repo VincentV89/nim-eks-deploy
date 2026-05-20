@@ -1,3 +1,13 @@
+output "ecr_repository_url" {
+  description = "ECR repository URL for the NIM container image"
+  value       = aws_ecr_repository.nim.repository_url
+}
+
+output "aws_region" {
+  description = "AWS region of the deployment"
+  value       = var.region
+}
+
 output "sagemaker_endpoint_name" {
   description = "Name of the deployed SageMaker endpoint"
   value       = aws_sagemaker_endpoint.nim.name

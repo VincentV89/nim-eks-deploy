@@ -5,7 +5,7 @@ Deploy Llama 3.1 8B Instruct via NVIDIA NIM on Amazon SageMaker with auto scalin
 ## Architecture
 
 ```
-User -> SageMaker Endpoint -> NIM Container on ml.g5.xlarge (A10G GPU)
+User -> SageMaker Endpoint -> NIM Container (ECR) on ml.g5.xlarge (A10G GPU)
                                       |
                    Auto scaling on SageMakerVariantInvocationsPerInstance
 ```
@@ -16,29 +16,55 @@ User -> SageMaker Endpoint -> NIM Container on ml.g5.xlarge (A10G GPU)
 
 - AWS CLI configured with admin-level permissions
 - `terraform` installed
+- `docker` installed (for pulling NIM image from NGC and pushing to ECR)
 - `boto3` installed (for load test script)
 - [NVIDIA NGC API Key](https://org.ngc.nvidia.com/) (free - needed to pull NIM images)
 - ~$3.50/hr budget (one ml.g5.xlarge on-demand)
 
+## Important: ECR Image Requirement
+
+SageMaker cannot pull container images from the NGC private registry (`nvcr.io`) directly.
+The deploy script automatically handles pulling the NIM image from NGC and pushing it to
+a private ECR repository that Terraform creates. You need Docker installed and enough disk
+space for the NIM image (~15-20 GB).
+
 ## Deploy
+
+The deploy script automates all steps including the ECR image push:
+
+```bash
+export TF_VAR_ngc_api_key="<your-ngc-api-key>"
+./scripts/deploy.sh
+```
+
+For manual deployment:
 
 ```bash
 # 1. Configure variables
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # edit with your values (add NGC API key)
+cp terraform.tfvars.example terraform.tfvars   # edit with your values
 
-# 2. Deploy infrastructure and endpoint
-terraform init && terraform apply
+# 2. Set NGC API key as environment variable (avoids process-list exposure)
+export TF_VAR_ngc_api_key="<your-ngc-api-key>"
 
-# 3. Wait for endpoint to become InService (~5-10 min on first deploy)
+# 3. Create ECR repository first
+terraform init
+terraform apply -target=aws_ecr_repository.nim
+
+# 4. Push NIM image to ECR
+ECR_REPO=$(terraform output -raw ecr_repository_url)
+echo "${TF_VAR_ngc_api_key}" | docker login nvcr.io --username '$oauthtoken' --password-stdin
+docker pull nvcr.io/nim/meta/llama-3.1-8b-instruct:latest
+aws ecr get-login-password | docker login --username AWS --password-stdin "${ECR_REPO%%/*}"
+docker tag nvcr.io/nim/meta/llama-3.1-8b-instruct:latest "${ECR_REPO}:latest"
+docker push "${ECR_REPO}:latest"
+
+# 5. Deploy full infrastructure
+terraform apply
+
+# 6. Wait for endpoint to become InService (~5-10 min on first deploy)
 aws sagemaker wait endpoint-in-service \
   --endpoint-name $(terraform output -raw sagemaker_endpoint_name)
-```
-
-Alternatively, use the deploy script which automates all steps:
-
-```bash
-./scripts/deploy.sh <your-ngc-api-key>
 ```
 
 ## Test It

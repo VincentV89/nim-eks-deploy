@@ -1,4 +1,7 @@
 terraform {
+  # NOTE: The NGC API key is stored in Terraform state as part of the SageMaker model
+  # environment configuration. Use a remote backend with encryption (e.g., S3 with
+  # server-side encryption and restricted access) to protect sensitive values at rest.
   required_version = ">= 1.5"
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 5.0" }
@@ -8,11 +11,22 @@ terraform {
 provider "aws" { region = var.region }
 
 locals {
-  name = "nim-llama-3-1-8b"
+  name      = "nim-llama-3-1-8b"
+  ecr_image = "${aws_ecr_repository.nim.repository_url}:latest"
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
+
+# --- ECR Repository ---
+# SageMaker cannot pull from nvcr.io (NGC private registry) directly.
+# The NIM container image must be pushed to this ECR repository before deploying.
+# See scripts/deploy.sh for the automated pull-tag-push workflow.
+resource "aws_ecr_repository" "nim" {
+  name                 = local.name
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+}
 
 # --- IAM Role for SageMaker Execution ---
 resource "aws_iam_role" "sagemaker_execution" {
@@ -40,24 +54,36 @@ resource "aws_iam_role_policy" "sagemaker_execution" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "ECRAuthToken"
         Effect = "Allow"
         Action = [
-          "ecr:GetAuthorizationToken",
+          "ecr:GetAuthorizationToken"
+        ]
+        # GetAuthorizationToken does not support resource-level permissions
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPullFromNIMRepo"
+        Effect = "Allow"
+        Action = [
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage"
         ]
-        Resource = "*"
+        Resource = aws_ecr_repository.nim.arn
       },
       {
+        Sid    = "S3ModelArtifacts"
         Effect = "Allow"
         Action = [
           "s3:GetObject",
           "s3:ListBucket"
         ]
-        Resource = "*"
+        # Model artifacts bucket - scope further if you use a dedicated bucket
+        Resource = "arn:aws:s3:::*"
       },
       {
+        Sid    = "CloudWatchLogs"
         Effect = "Allow"
         Action = [
           "logs:CreateLogGroup",
@@ -66,16 +92,6 @@ resource "aws_iam_role_policy" "sagemaker_execution" {
           "logs:DescribeLogStreams"
         ]
         Resource = "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "sagemaker:CreateModel",
-          "sagemaker:CreateEndpointConfig",
-          "sagemaker:CreateEndpoint",
-          "sagemaker:InvokeEndpoint"
-        ]
-        Resource = "*"
       }
     ]
   })
@@ -87,8 +103,11 @@ resource "aws_sagemaker_model" "nim" {
   execution_role_arn = aws_iam_role.sagemaker_execution.arn
 
   primary_container {
-    image = "nvcr.io/nim/meta/llama-3.1-8b-instruct:latest"
+    image = local.ecr_image
 
+    # WARNING: NGC_API_KEY will be stored in Terraform state in plaintext.
+    # Ensure your state backend is encrypted and access-controlled.
+    # Consider AWS Secrets Manager for production deployments.
     environment = {
       NGC_API_KEY = var.ngc_api_key
     }
@@ -130,7 +149,10 @@ resource "aws_appautoscaling_policy" "nim" {
   service_namespace  = aws_appautoscaling_target.nim.service_namespace
 
   target_tracking_scaling_policy_configuration {
-    target_value = 5.0
+    # SageMakerVariantInvocationsPerInstance counts invocations per minute per instance.
+    # For LLM inference on ml.g5.xlarge (A10G) where each request takes 2-10 seconds,
+    # 60 invocations/min/instance is a reasonable threshold before scaling out.
+    target_value = 60.0
 
     predefined_metric_specification {
       predefined_metric_type = "SageMakerVariantInvocationsPerInstance"

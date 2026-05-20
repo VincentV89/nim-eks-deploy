@@ -2,7 +2,7 @@
 Load test for NIM on SageMaker -- fires concurrent chat completions to trigger auto scaling.
 Usage: python load_test.py <endpoint-name> --rps 20 --duration 60
 """
-import argparse, asyncio, time, json
+import argparse, asyncio, time, json, threading
 from concurrent.futures import ThreadPoolExecutor
 
 import boto3
@@ -24,19 +24,22 @@ def invoke_endpoint(client, endpoint_name):
     response["Body"].read()
 
 
-async def send_request(loop, executor, client, endpoint_name, stats):
+async def send_request(loop, executor, client, endpoint_name, stats, lock):
     t0 = time.monotonic()
     try:
         await loop.run_in_executor(executor, invoke_endpoint, client, endpoint_name)
         latency = time.monotonic() - t0
-        stats["ok"] += 1
-        stats["latencies"].append(latency)
+        with lock:
+            stats["ok"] += 1
+            stats["latencies"].append(latency)
     except Exception:
-        stats["err"] += 1
+        with lock:
+            stats["err"] += 1
 
 
 async def main(endpoint_name, rps, duration):
     stats = {"ok": 0, "err": 0, "latencies": []}
+    lock = threading.Lock()
     interval = 1.0 / rps
     end = time.monotonic() + duration
 
@@ -47,7 +50,7 @@ async def main(endpoint_name, rps, duration):
     tasks = []
     while time.monotonic() < end:
         tasks.append(asyncio.ensure_future(
-            send_request(loop, executor, client, endpoint_name, stats)
+            send_request(loop, executor, client, endpoint_name, stats, lock)
         ))
         await asyncio.sleep(interval)
     await asyncio.gather(*tasks)
