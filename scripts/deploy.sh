@@ -1,54 +1,76 @@
 #!/usr/bin/env bash
-# Deploy NIM + GPU monitoring stack onto an existing EKS cluster.
-# Usage: ./deploy.sh <NGC_API_KEY>
+# Deploy NVIDIA NIM on Amazon SageMaker via Terraform.
+#
+# Prerequisites:
+#   - docker (for pulling from nvcr.io and pushing to ECR)
+#   - aws CLI configured with appropriate permissions
+#   - terraform installed
+#
+# Usage:
+#   export TF_VAR_ngc_api_key="<your-ngc-api-key>"
+#   ./deploy.sh
+#
+# The NGC API key is read from the TF_VAR_ngc_api_key environment variable
+# to avoid exposing it in the process list (which would happen with -var CLI flags).
 set -euo pipefail
 
-NGC_KEY="${1:?Usage: ./deploy.sh <NGC_API_KEY>}"
+if [[ -z "${TF_VAR_ngc_api_key:-}" ]]; then
+  echo "ERROR: TF_VAR_ngc_api_key environment variable is not set."
+  echo "Usage:"
+  echo "  export TF_VAR_ngc_api_key=\"<your-ngc-api-key>\""
+  echo "  ./deploy.sh"
+  exit 1
+fi
 
-echo "=== 1/4  Creating NGC image pull secret ==="
-kubectl create secret docker-registry ngc-secret \
-  --docker-server=nvcr.io \
-  --docker-username='$oauthtoken' \
-  --docker-password="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+NGC_IMAGE="nvcr.io/nim/meta/llama-3.1-8b-instruct:latest"
 
-# Also store the key so NIM can download model weights at runtime
-kubectl create secret generic ngc-secret \
-  --from-literal=NGC_API_KEY="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+echo "=== 1/6  Initializing Terraform ==="
+terraform -chdir=terraform init
 
-echo "=== 2/4  Installing NVIDIA DCGM Exporter (GPU metrics) ==="
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
-helm upgrade --install dcgm-exporter nvidia/dcgm-exporter \
-  --namespace monitoring --create-namespace \
-  --set tolerations[0].key=nvidia.com/gpu \
-  --set tolerations[0].operator=Exists \
-  --set tolerations[0].effect=NoSchedule
+echo "=== 2/6  Creating ECR repository (if not exists) ==="
+terraform -chdir=terraform apply -auto-approve -target=aws_ecr_repository.nim
 
-echo "=== 3/4  Installing Prometheus + Adapter (metrics pipeline for HPA) ==="
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+echo "=== 3/6  Pushing NIM image from nvcr.io to ECR ==="
+ECR_REPO=$(terraform -chdir=terraform output -raw ecr_repository_url 2>/dev/null || \
+  aws ecr describe-repositories --repository-names nim-llama-3-1-8b --query 'repositories[0].repositoryUri' --output text)
+AWS_REGION=$(terraform -chdir=terraform output -raw aws_region 2>/dev/null || echo "us-east-1")
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-# Prometheus — scrape DCGM metrics
-helm upgrade --install prometheus prometheus-community/prometheus \
-  --namespace monitoring --create-namespace \
-  --set server.persistentVolume.enabled=false \
-  --set alertmanager.enabled=false
+# Login to NGC registry
+echo "${TF_VAR_ngc_api_key}" | docker login nvcr.io --username '$oauthtoken' --password-stdin
 
-# Prometheus Adapter — expose DCGM metrics to Kubernetes HPA
-helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
-  --namespace monitoring \
-  --set prometheus.url=http://prometheus-server.monitoring.svc \
-  --set prometheus.port=80 \
-  --set "rules.custom[0].seriesQuery=DCGM_FI_DEV_GPU_UTIL" \
-  --set "rules.custom[0].metricsQuery=avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)" \
-  --set "rules.custom[0].resources.overrides.namespace.resource=namespace" \
-  --set "rules.custom[0].resources.overrides.pod.resource=pod"
+# Pull the NIM image from NGC
+docker pull "${NGC_IMAGE}"
 
-echo "=== 4/4  Deploying NIM ==="
-kubectl apply -f k8s/
+# Login to ECR
+aws ecr get-login-password --region "${AWS_REGION}" | \
+  docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+# Tag and push to ECR
+docker tag "${NGC_IMAGE}" "${ECR_REPO}:latest"
+docker push "${ECR_REPO}:latest"
+echo "Image pushed to ECR: ${ECR_REPO}:latest"
+
+echo "=== 4/6  Applying full Terraform configuration ==="
+terraform -chdir=terraform apply -auto-approve
+
+echo "=== 5/6  Waiting for endpoint to become InService ==="
+ENDPOINT_NAME=$(terraform -chdir=terraform output -raw sagemaker_endpoint_name)
+echo "Endpoint: ${ENDPOINT_NAME}"
+aws sagemaker wait endpoint-in-service --endpoint-name "${ENDPOINT_NAME}"
+echo "Endpoint is InService."
+
+echo "=== 6/6  Testing endpoint with sample invocation ==="
+aws sagemaker-runtime invoke-endpoint \
+  --endpoint-name "${ENDPOINT_NAME}" \
+  --content-type "application/json" \
+  --body '{"model":"meta/llama-3.1-8b-instruct","messages":[{"role":"user","content":"Hello!"}],"max_tokens":50}' \
+  /tmp/nim-test-response.json
 
 echo ""
-echo "Done! NIM is starting (TensorRT engine build takes ~2-5 min on first boot)."
-echo "Watch progress:  kubectl logs -f deployment/nim-llm"
-echo "Check HPA:       kubectl get hpa nim-llm -w"
-echo "Get endpoint:    kubectl get svc nim-llm -w"
+echo "Response:"
+cat /tmp/nim-test-response.json
+echo ""
+echo ""
+echo "Done! SageMaker endpoint '${ENDPOINT_NAME}' is live and serving requests."
+echo "Invoke:  aws sagemaker-runtime invoke-endpoint --endpoint-name ${ENDPOINT_NAME} --content-type application/json --body '<payload>' output.json"
