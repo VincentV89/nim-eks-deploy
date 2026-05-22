@@ -1,11 +1,14 @@
-output "cluster_name" {
-  value = module.eks.cluster_name
+output "sagemaker_endpoint_name" {
+  description = "Name of the SageMaker endpoint"
+  value       = aws_sagemaker_endpoint.nim.name
 }
 
-output "cluster_endpoint" {
-  value = module.eks.cluster_endpoint
+output "sagemaker_endpoint_url" {
+  description = "URL for invoking the SageMaker endpoint"
+  value       = "https://runtime.sagemaker.${var.region}.amazonaws.com/endpoints/${aws_sagemaker_endpoint.nim.name}/invocations"
 }
 
-output "configure_kubectl" {
-  value = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
+output "iam_role_arn" {
+  description = "ARN of the SageMaker execution IAM role"
+  value       = aws_iam_role.sagemaker_execution.arn
 }
