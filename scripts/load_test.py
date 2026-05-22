@@ -5,6 +5,7 @@ Usage: python load_test.py --endpoint-name <ENDPOINT_NAME> --rps 20 --duration 6
 """
 import argparse
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,7 +20,7 @@ PAYLOAD = {
 }
 
 
-def send_request(client, endpoint_name, stats):
+def send_request(client, endpoint_name, stats, lock):
     t0 = time.monotonic()
     try:
         response = client.invoke_endpoint(
@@ -29,15 +30,18 @@ def send_request(client, endpoint_name, stats):
         )
         response["Body"].read()
         latency = time.monotonic() - t0
-        stats["ok"] += 1
-        stats["latencies"].append(latency)
+        with lock:
+            stats["ok"] += 1
+            stats["latencies"].append(latency)
     except Exception:
-        stats["err"] += 1
+        with lock:
+            stats["err"] += 1
 
 
 def main(endpoint_name, rps, duration):
     client = boto3.client("sagemaker-runtime")
     stats = {"ok": 0, "err": 0, "latencies": []}
+    lock = threading.Lock()
     interval = 1.0 / rps
     end = time.monotonic() + duration
 
@@ -45,7 +49,7 @@ def main(endpoint_name, rps, duration):
     with ThreadPoolExecutor(max_workers=rps * 2) as executor:
         while time.monotonic() < end:
             futures.append(
-                executor.submit(send_request, client, endpoint_name, stats)
+                executor.submit(send_request, client, endpoint_name, stats, lock)
             )
             time.sleep(interval)
         for f in as_completed(futures):

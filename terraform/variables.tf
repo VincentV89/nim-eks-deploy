@@ -4,6 +4,12 @@ variable "region" {
   default     = "us-east-1"
 }
 
+variable "name_prefix" {
+  description = "Prefix for resource names (allows parallel deployments in the same account)"
+  type        = string
+  default     = "nim-demo"
+}
+
 variable "nim_image_uri" {
   description = "NVIDIA NIM container image URI"
   type        = string

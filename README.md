@@ -31,7 +31,7 @@ terraform init && terraform apply
 
 # 2. Or use the deploy script (handles init, apply, and waits for InService)
 cd ..
-./scripts/deploy.sh <your-ngc-api-key>
+NGC_API_KEY=<your-ngc-api-key> ./scripts/deploy.sh
 ```
 
 ## Test
@@ -58,7 +58,7 @@ Watch scaling activity:
 ```bash
 aws application-autoscaling describe-scaling-activities \
   --service-namespace sagemaker \
-  --resource-id "endpoint/nim-llm/variant/AllTraffic"
+  --resource-id "endpoint/nim-demo/variant/primary"
 ```
 
 ## Teardown

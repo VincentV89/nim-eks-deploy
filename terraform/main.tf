@@ -8,7 +8,7 @@ terraform {
 provider "aws" { region = var.region }
 
 locals {
-  name = "nim-demo"
+  name = var.name_prefix
 }
 
 # --- IAM Role for SageMaker Execution ---
@@ -44,24 +44,6 @@ resource "aws_iam_role_policy" "sagemaker_custom" {
       {
         Effect = "Allow"
         Action = [
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
@@ -79,6 +61,9 @@ resource "aws_sagemaker_model" "nim" {
 
   primary_container {
     image = var.nim_image_uri
+    # NOTE: For production, store the NGC API key in AWS Secrets Manager or SSM
+    # Parameter Store and retrieve it at container startup instead of passing it
+    # as a plaintext environment variable.
     environment = {
       NGC_API_KEY = var.ngc_api_key
     }
