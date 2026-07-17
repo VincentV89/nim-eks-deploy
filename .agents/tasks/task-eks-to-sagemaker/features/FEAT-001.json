@@ -1,0 +1,35 @@
+{
+  "id": "FEAT-001",
+  "type": "refactor",
+  "description": "Replace EKS infrastructure with SageMaker endpoint in Terraform, remove k8s manifests, rewrite deploy script for SageMaker, update load test to target SageMaker endpoint, and update README to reflect the new SageMaker architecture.",
+  "status": "in_progress",
+  "steps": [
+    "Rewrite terraform/main.tf: Remove VPC and EKS modules. Replace with SageMaker resources: aws_iam_role for SageMaker execution, aws_sagemaker_model using the NVIDIA NIM container image (nvcr.io/nim/meta/llama-3.1-8b-instruct:latest) on ml.g5.xlarge instance, aws_sagemaker_endpoint_configuration with the model and instance type, and aws_sagemaker_endpoint. Include an autoscaling target and policy for the endpoint (replacing HPA). Use a data source or variable for the NGC API key.",
+    "Rewrite terraform/variables.tf: Replace gpu_min_nodes/gpu_max_nodes with sagemaker-relevant variables: region (keep), instance_type (default ml.g5.xlarge), initial_instance_count (default 1), max_instance_count (default 3), ngc_api_key (sensitive), and model_name.",
+    "Rewrite terraform/outputs.tf: Output the SageMaker endpoint name and URL (endpoint invoke URL pattern).",
+    "Update terraform/terraform.tfvars.example: Show example values for the new SageMaker variables.",
+    "Delete the k8s/ directory entirely (nim-deployment.yaml, nim-service.yaml, nim-hpa.yaml are no longer needed).",
+    "Rewrite scripts/deploy.sh: Replace the EKS/kubectl/helm deployment with a script that runs terraform init/apply and then tests the SageMaker endpoint using AWS CLI (aws sagemaker-runtime invoke-endpoint).",
+    "Rewrite scripts/load_test.py: Change from hitting a raw HTTP URL to invoking the SageMaker endpoint. Use boto3 sagemaker-runtime invoke-endpoint API with the same payload format. Keep the async load test pattern but adapt to use boto3 (or the SageMaker HTTPS endpoint directly via aiohttp with SigV4 auth). The simpler approach is to use the SageMaker endpoint's HTTPS URL directly with IAM auth.",
+    "Rewrite README.md: Update architecture diagram, prerequisites (remove kubectl/helm, add boto3), deploy steps, load test instructions, teardown instructions, and key concepts table to reflect SageMaker.",
+    "Update .github/workflows/kiro-review.yml: Update the paths trigger to remove k8s/** (since the directory is gone) and update the review prompt to mention SageMaker instead of K8s."
+  ],
+  "acceptance_criteria": [
+    "terraform validate passes on the new terraform/ directory",
+    "scripts/deploy.sh passes bash -n syntax check",
+    "scripts/load_test.py passes python -m py_compile",
+    "k8s/ directory no longer exists",
+    "README.md references SageMaker, not EKS/kubectl/helm",
+    "terraform/main.tf contains SageMaker resources (aws_sagemaker_model, aws_sagemaker_endpoint_configuration, aws_sagemaker_endpoint)",
+    "terraform/variables.tf contains instance_type and max_instance_count variables",
+    "Autoscaling is configured via aws_appautoscaling_target and aws_appautoscaling_policy"
+  ],
+  "verification": [
+    "cd /projects/sandbox/nim-eks-deploy/terraform && terraform init && terraform validate",
+    "bash -n /projects/sandbox/nim-eks-deploy/scripts/deploy.sh",
+    "python3 -m py_compile /projects/sandbox/nim-eks-deploy/scripts/load_test.py",
+    "test ! -d /projects/sandbox/nim-eks-deploy/k8s"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

@@ -1,0 +1,7 @@
+{
+  "task_id": "task-eks-to-sagemaker",
+  "task_description": "Migrate NVIDIA NIM inference deployment from EKS (with GPU autoscaling via HPA/DCGM) to AWS SageMaker endpoint with application autoscaling. Replace all Terraform, scripts, and documentation accordingly.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}
