@@ -27,17 +27,48 @@ resource "aws_iam_role" "sagemaker_execution" {
   assume_role_policy = data.aws_iam_policy_document.sagemaker_assume_role.json
 }
 
-resource "aws_iam_role_policy_attachment" "sagemaker_full_access" {
-  role       = aws_iam_role.sagemaker_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess"
+data "aws_iam_policy_document" "sagemaker_execution" {
+  # ECR: pull container images
+  statement {
+    sid = "ECRPull"
+    actions = [
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+      "ecr:GetAuthorizationToken",
+    ]
+    resources = ["*"]
+  }
+
+  # CloudWatch Logs: write logs from the endpoint container
+  statement {
+    sid = "CloudWatchLogs"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = ["arn:aws:logs:*:*:log-group:/aws/sagemaker/*"]
+  }
+
+  # SageMaker: allow the endpoint to invoke itself (for multi-container pipelines)
+  statement {
+    sid       = "SageMakerInvoke"
+    actions   = ["sagemaker:InvokeEndpoint"]
+    resources = ["*"]
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "ecr_read" {
-  role       = aws_iam_role.sagemaker_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+resource "aws_iam_role_policy" "sagemaker_execution" {
+  name   = "${local.name}-execution-policy"
+  role   = aws_iam_role.sagemaker_execution.id
+  policy = data.aws_iam_policy_document.sagemaker_execution.json
 }
 
 # --- SageMaker Model ---
+# NOTE: NGC_API_KEY is passed as a plaintext environment variable here. This is
+# acceptable for a demo/reference deployment. For production use, store the key
+# in AWS Secrets Manager and retrieve it at container startup.
 resource "aws_sagemaker_model" "nim" {
   name               = local.name
   execution_role_arn = aws_iam_role.sagemaker_execution.arn

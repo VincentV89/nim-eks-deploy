@@ -16,8 +16,8 @@ PAYLOAD = json.dumps({
 })
 
 
-def send_request(client, endpoint_name, stats):
-    """Invoke the SageMaker endpoint and record latency."""
+def send_request(client, endpoint_name):
+    """Invoke the SageMaker endpoint and return (latency, success) tuple."""
     t0 = time.monotonic()
     try:
         response = client.invoke_endpoint(
@@ -27,15 +27,13 @@ def send_request(client, endpoint_name, stats):
         )
         _ = response["Body"].read()
         latency = time.monotonic() - t0
-        stats["ok"] += 1
-        stats["latencies"].append(latency)
+        return (latency, True)
     except Exception:
-        stats["err"] += 1
+        return (None, False)
 
 
 def main(endpoint_name, region, rps, duration):
     client = boto3.client("sagemaker-runtime", region_name=region)
-    stats = {"ok": 0, "err": 0, "latencies": []}
     interval = 1.0 / rps
     end_time = time.monotonic() + duration
     futures = []
@@ -44,18 +42,26 @@ def main(endpoint_name, region, rps, duration):
 
     with ThreadPoolExecutor(max_workers=min(rps * 2, 200)) as executor:
         while time.monotonic() < end_time:
-            futures.append(executor.submit(send_request, client, endpoint_name, stats))
+            futures.append(executor.submit(send_request, client, endpoint_name))
             time.sleep(interval)
-        # Wait for all in-flight requests to complete
+        # Collect results from all futures -- no shared mutable state
+        ok = 0
+        err = 0
+        latencies = []
         for f in as_completed(futures):
-            pass
+            latency, success = f.result()
+            if success:
+                ok += 1
+                latencies.append(latency)
+            else:
+                err += 1
 
-    lats = sorted(stats["latencies"])
+    lats = sorted(latencies)
     print(f"\n{'=' * 50}")
-    print(f"Requests:  {stats['ok']} ok / {stats['err']} errors")
+    print(f"Requests:  {ok} ok / {err} errors")
     if lats:
         print(f"Latency:   p50={lats[len(lats)//2]:.2f}s  p95={lats[int(len(lats)*0.95)]:.2f}s  p99={lats[int(len(lats)*0.99)]:.2f}s")
-        print(f"Throughput: {stats['ok']/duration:.1f} req/s")
+        print(f"Throughput: {ok/duration:.1f} req/s")
 
 
 if __name__ == "__main__":

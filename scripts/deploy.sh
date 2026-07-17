@@ -14,7 +14,7 @@ echo "=== 2/3  Applying Terraform (creates SageMaker endpoint) ==="
 terraform apply -auto-approve -input=false
 
 ENDPOINT_NAME=$(terraform output -raw endpoint_name)
-REGION=$(terraform output -raw endpoint_url | grep -oP '(?<=sagemaker\.)[^.]+')
+REGION=$(terraform output -raw region)
 
 echo "=== 3/3  Testing SageMaker endpoint ==="
 echo "Endpoint: ${ENDPOINT_NAME}"
