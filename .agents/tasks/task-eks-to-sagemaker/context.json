@@ -1,0 +1,28 @@
+{
+  "project_type": "Infrastructure-as-Code project deploying NVIDIA NIM (Llama 3.1 8B) - migrating from EKS to SageMaker",
+  "language": "HCL (Terraform), Bash, Python",
+  "build_system": "Terraform for infrastructure, bash scripts for deployment, Python for load testing",
+  "test_framework": "No automated tests - validation is done via terraform validate and script syntax checks",
+  "build_command": "cd terraform && terraform init && terraform validate",
+  "test_command": "python -m py_compile scripts/load_test.py && bash -n scripts/deploy.sh",
+  "verification_instructions": "1. Run terraform validate on the terraform/ directory. 2. Run python -m py_compile on load_test.py. 3. Run bash -n on deploy.sh for syntax check.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "No local setup needed beyond having terraform, python3 available",
+  "environment_constraints": "Open internet access. No actual AWS deployment will be done - validation is syntax/structure only.",
+  "contribution_requirements": "No CONTRIBUTING.md present. The repo uses a GitHub Actions workflow for automated review on PRs touching terraform/, k8s/, and scripts/ paths.",
+  "key_patterns": "Terraform uses community modules (terraform-aws-modules). Scripts use set -euo pipefail. Load test uses asyncio/aiohttp. K8s manifests are plain YAML applied via kubectl.",
+  "relevant_files": [
+    "terraform/main.tf",
+    "terraform/variables.tf",
+    "terraform/outputs.tf",
+    "terraform/terraform.tfvars.example",
+    "scripts/deploy.sh",
+    "scripts/load_test.py",
+    "k8s/nim-deployment.yaml",
+    "k8s/nim-service.yaml",
+    "k8s/nim-hpa.yaml",
+    "README.md",
+    ".github/workflows/kiro-review.yml"
+  ],
+  "directory_structure": "terraform/ - IaC for AWS infra; k8s/ - Kubernetes manifests for NIM; scripts/ - deploy.sh and load_test.py; .github/workflows/ - CI review workflow"
+}

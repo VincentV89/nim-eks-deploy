@@ -1,54 +1,37 @@
 #!/usr/bin/env bash
-# Deploy NIM + GPU monitoring stack onto an existing EKS cluster.
-# Usage: ./deploy.sh <NGC_API_KEY>
+# Deploy NVIDIA NIM on AWS SageMaker via Terraform and verify the endpoint.
+# Usage: ./deploy.sh
 set -euo pipefail
 
-NGC_KEY="${1:?Usage: ./deploy.sh <NGC_API_KEY>}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TF_DIR="${SCRIPT_DIR}/../terraform"
 
-echo "=== 1/4  Creating NGC image pull secret ==="
-kubectl create secret docker-registry ngc-secret \
-  --docker-server=nvcr.io \
-  --docker-username='$oauthtoken' \
-  --docker-password="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+echo "=== 1/3  Initializing Terraform ==="
+cd "${TF_DIR}"
+terraform init -input=false
 
-# Also store the key so NIM can download model weights at runtime
-kubectl create secret generic ngc-secret \
-  --from-literal=NGC_API_KEY="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+echo "=== 2/3  Applying Terraform (creates SageMaker endpoint) ==="
+terraform apply -auto-approve -input=false
 
-echo "=== 2/4  Installing NVIDIA DCGM Exporter (GPU metrics) ==="
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
-helm upgrade --install dcgm-exporter nvidia/dcgm-exporter \
-  --namespace monitoring --create-namespace \
-  --set tolerations[0].key=nvidia.com/gpu \
-  --set tolerations[0].operator=Exists \
-  --set tolerations[0].effect=NoSchedule
+ENDPOINT_NAME=$(terraform output -raw endpoint_name)
+REGION=$(terraform output -raw region)
 
-echo "=== 3/4  Installing Prometheus + Adapter (metrics pipeline for HPA) ==="
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+echo "=== 3/3  Testing SageMaker endpoint ==="
+echo "Endpoint: ${ENDPOINT_NAME}"
+echo "Waiting for endpoint to be InService..."
 
-# Prometheus — scrape DCGM metrics
-helm upgrade --install prometheus prometheus-community/prometheus \
-  --namespace monitoring --create-namespace \
-  --set server.persistentVolume.enabled=false \
-  --set alertmanager.enabled=false
+aws sagemaker wait endpoint-in-service --endpoint-name "${ENDPOINT_NAME}" --region "${REGION}"
 
-# Prometheus Adapter — expose DCGM metrics to Kubernetes HPA
-helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
-  --namespace monitoring \
-  --set prometheus.url=http://prometheus-server.monitoring.svc \
-  --set prometheus.port=80 \
-  --set "rules.custom[0].seriesQuery=DCGM_FI_DEV_GPU_UTIL" \
-  --set "rules.custom[0].metricsQuery=avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)" \
-  --set "rules.custom[0].resources.overrides.namespace.resource=namespace" \
-  --set "rules.custom[0].resources.overrides.pod.resource=pod"
+echo "Sending test inference request..."
+RESPONSE=$(aws sagemaker-runtime invoke-endpoint \
+  --endpoint-name "${ENDPOINT_NAME}" \
+  --region "${REGION}" \
+  --content-type "application/json" \
+  --body '{"model":"meta/llama-3.1-8b-instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' \
+  /dev/stdout 2>/dev/null)
 
-echo "=== 4/4  Deploying NIM ==="
-kubectl apply -f k8s/
-
+echo "Response: ${RESPONSE}"
 echo ""
-echo "Done! NIM is starting (TensorRT engine build takes ~2-5 min on first boot)."
-echo "Watch progress:  kubectl logs -f deployment/nim-llm"
-echo "Check HPA:       kubectl get hpa nim-llm -w"
-echo "Get endpoint:    kubectl get svc nim-llm -w"
+echo "Done! SageMaker endpoint is live."
+echo "Endpoint name: ${ENDPOINT_NAME}"
+echo "To teardown:   cd terraform && terraform destroy"

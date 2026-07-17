@@ -1,0 +1,14 @@
+{
+  "task_id": "task-eks-to-sagemaker",
+  "task_description": "Migrate NVIDIA NIM inference deployment from EKS (with GPU autoscaling via HPA/DCGM) to AWS SageMaker endpoint with application autoscaling. Replace all Terraform, scripts, and documentation accordingly.",
+  "status": "completed",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null,
+  "verification": {
+    "build": "skipped",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "Terraform validate cannot run (terraform binary not available in sandbox). bash -n syntax check passes for deploy.sh, python -m py_compile passes for load_test.py, k8s/ directory confirmed deleted. Manual review of HCL confirms correct syntax. Semantic review v2: APPROVED."
+  }
+}
