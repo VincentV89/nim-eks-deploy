@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "refactor",
   "description": "Replace EKS infrastructure with SageMaker endpoint in Terraform, remove k8s manifests, rewrite deploy script for SageMaker, update load test to target SageMaker endpoint, and update README to reflect the new SageMaker architecture.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Rewrite terraform/main.tf: Remove VPC and EKS modules. Replace with SageMaker resources: aws_iam_role for SageMaker execution, aws_sagemaker_model using the NVIDIA NIM container image (nvcr.io/nim/meta/llama-3.1-8b-instruct:latest) on ml.g5.xlarge instance, aws_sagemaker_endpoint_configuration with the model and instance type, and aws_sagemaker_endpoint. Include an autoscaling target and policy for the endpoint (replacing HPA). Use a data source or variable for the NGC API key.",
     "Rewrite terraform/variables.tf: Replace gpu_min_nodes/gpu_max_nodes with sagemaker-relevant variables: region (keep), instance_type (default ml.g5.xlarge), initial_instance_count (default 1), max_instance_count (default 3), ngc_api_key (sensitive), and model_name.",
@@ -31,5 +31,5 @@
     "test ! -d /projects/sandbox/nim-eks-deploy/k8s"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Terraform cannot be installed in the sandbox (releases.hashicorp.com is blocked). Structural HCL validation was performed via Python (balanced braces, required resources, variables). bash -n and py_compile verifications pass. k8s directory successfully removed."
 }
