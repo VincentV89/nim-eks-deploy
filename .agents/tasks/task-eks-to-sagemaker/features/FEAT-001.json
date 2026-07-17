@@ -31,5 +31,5 @@
     "test ! -d /projects/sandbox/nim-eks-deploy/k8s"
   ],
   "blocked_reason": null,
-  "findings": "Terraform cannot be installed in the sandbox (releases.hashicorp.com is blocked). Structural HCL validation was performed via Python (balanced braces, required resources, variables). bash -n and py_compile verifications pass. k8s directory successfully removed."
+  "findings": "Terraform cannot be installed in the sandbox (releases.hashicorp.com is blocked). Structural HCL validation was performed via Python (balanced braces, required resources, variables). bash -n and py_compile verifications pass. k8s directory successfully removed. Post-review fixes applied: (1) load_test.py thread safety fixed by returning results from workers, (2) deploy.sh region extraction uses terraform output -raw region, (3) IAM role scoped to ECR pull + CloudWatch Logs + SageMaker invoke, (4) NGC API key plaintext documented as demo-only pattern."
 }
