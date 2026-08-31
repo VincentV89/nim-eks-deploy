@@ -14,7 +14,7 @@ locals {
 
 data "aws_availability_zones" "available" { state = "available" }
 
-# --- VPC ---
+# --- VPC --- (edited for cs203 demo)
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
