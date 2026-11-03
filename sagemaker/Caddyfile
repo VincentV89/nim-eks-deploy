@@ -1,0 +1,25 @@
+# Maps the SageMaker inference contract (port 8080) onto the NIM API.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness (fails until the engine is loaded)
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy 127.0.0.1:{$NIM_SERVER_PORT:8000}
+	}
+
+	# SageMaker inference -> OpenAI-compatible chat completions
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy 127.0.0.1:{$NIM_SERVER_PORT:8000} {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
