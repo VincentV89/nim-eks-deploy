@@ -1,0 +1,28 @@
+# Translate the SageMaker hosting contract (port 8080) to NIM (port 8000).
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness probe.
+	# Returns 502 until NIM has finished loading the model, which SageMaker
+	# treats as "not ready yet" and retries until the startup timeout.
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy localhost:8000
+	}
+
+	# SageMaker InvokeEndpoint / InvokeEndpointWithResponseStream ->
+	# NIM OpenAI-compatible chat completions API.
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy localhost:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
