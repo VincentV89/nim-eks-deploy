@@ -1,0 +1,5 @@
+# Copy to backend.hcl and run: terraform init -backend-config=backend.hcl
+# (scripts/deploy.sh generates these settings from TF_STATE_BUCKET instead.)
+bucket = "my-terraform-state-bucket" # versioned, SSE-KMS, public access blocked
+key    = "nim-sagemaker/terraform.tfstate"
+region = "us-east-1"

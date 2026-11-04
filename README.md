@@ -40,7 +40,8 @@ If your NIM version uses a different start command, override `NIM_START_CMD`
 ## Prerequisites
 
 - AWS CLI configured with permissions for SageMaker, ECR, IAM and Application Auto Scaling
-- `terraform` (>= 1.5) and `docker` (with `linux/amd64` build support) installed
+- An S3 bucket for Terraform state (versioned, encrypted, public access blocked) — state holds the NGC key
+- `terraform` (>= 1.10) and `docker` (with `linux/amd64` build support) installed
 - [NVIDIA NGC API Key](https://org.ngc.nvidia.com/) (free — needed to pull NIM images and model weights)
 - SageMaker service quota for `ml.g5.xlarge for endpoint usage` ≥ `max_instances`
 - ~$1.41/hr per instance (`ml.g5.xlarge` on-demand, us-east-1)
@@ -50,16 +51,22 @@ If your NIM version uses a different start command, override `NIM_START_CMD`
 ```bash
 export NGC_API_KEY=nvapi-...          # never commit this
 export AWS_REGION=us-east-1
+export TF_STATE_BUCKET=my-tf-state     # or create terraform/backend.hcl from backend.hcl.example
+export EXPECTED_AWS_ACCOUNT_ID=123456789012   # optional: abort if credentials point elsewhere
 ./scripts/deploy.sh
 ```
 
 `deploy.sh` will:
-1. create the ECR repository (`terraform apply -target=aws_ecr_repository.nim`)
+0. print the caller identity (and abort on an `EXPECTED_AWS_ACCOUNT_ID` mismatch), then
+   `terraform init` against the encrypted S3 backend
+1. create the KMS key and ECR repository (`terraform apply -target=aws_ecr_repository.nim`)
 2. pull the NIM image from `nvcr.io`
-3. build the SageMaker shim and push it to ECR with a unique tag
+3. build the SageMaker shim and push it to the tag-immutable ECR repository with a unique tag
 4. `terraform apply` the model, endpoint config, endpoint and autoscaling policy
 
 Optional overrides: `cp terraform/terraform.tfvars.example terraform/terraform.tfvars`.
+The NIM image is pinned (`NIM_IMAGE`, default `nvcr.io/nim/meta/llama-3.1-8b-instruct:1.3.3`);
+`:latest` is rejected so deployments are reproducible.
 
 ## Test it
 
@@ -89,7 +96,7 @@ aws sagemaker describe-endpoint --endpoint-name nim-demo --region us-east-1 \
 ## Teardown
 
 ```bash
-cd terraform && TF_VAR_ngc_api_key=unused terraform destroy
+cd terraform && TF_VAR_ngc_api_key=unused TF_VAR_image_tag=unused terraform destroy
 ```
 
 ## Security notes
@@ -97,7 +104,14 @@ cd terraform && TF_VAR_ngc_api_key=unused terraform destroy
 - The endpoint is only reachable through the SigV4-authenticated SageMaker Runtime API.
 - SageMaker has no native secret injection for container environment variables, so
   `NGC_API_KEY` is visible via `sagemaker:DescribeModel` and stored in Terraform state.
-  Use an encrypted remote backend and restrict `DescribeModel` accordingly.
+  State is therefore kept in an encrypted S3 backend with lockfile locking; restrict
+  `DescribeModel` and state-bucket access accordingly.
+- The shim container runs as a non-root user (UID 1000); root is only used at build time.
+- ECR images and endpoint logs are encrypted with a customer-managed, auto-rotating KMS key;
+  logs are retained for `log_retention_days` (default 30). `ml.g5` instance storage is
+  NVMe, which SageMaker encrypts in hardware (it does not accept a KMS key for it).
+- The endpoint is not attached to a VPC, so there are no security groups to manage; NIM needs
+  outbound internet to download weights from NGC, so network isolation is not enabled.
 
 ## CI/CD
 
