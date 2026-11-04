@@ -1,3 +1,6 @@
-region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+region                 = "us-east-1"
+instance_type          = "ml.g5.xlarge"
+min_instances          = 1
+max_instances          = 3
+gpu_utilization_target = 70
+# image_tag is set by scripts/deploy.sh on each deploy

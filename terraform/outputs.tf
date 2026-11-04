@@ -1,11 +1,12 @@
-output "cluster_name" {
-  value = module.eks.cluster_name
+output "endpoint_name" {
+  description = "SageMaker endpoint name (null until an image has been deployed)"
+  value       = one(aws_sagemaker_endpoint.nim[*].name)
 }
 
-output "cluster_endpoint" {
-  value = module.eks.cluster_endpoint
+output "ecr_repository_url" {
+  value = aws_ecr_repository.nim.repository_url
 }
 
-output "configure_kubectl" {
-  value = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
+output "ngc_secret_arn" {
+  value = aws_secretsmanager_secret.ngc.arn
 }
