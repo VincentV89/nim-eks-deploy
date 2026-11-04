@@ -1,8 +1,13 @@
 """
-Load test for NIM — fires concurrent chat completions to trigger GPU autoscaling.
-Usage: python load_test.py http://<NIM_URL>:8000 --rps 20 --duration 60
+Load test for NIM on SageMaker — fires concurrent chat completions at the
+endpoint (SigV4-signed via boto3) to trigger GPU autoscaling.
+Usage: python load_test.py <ENDPOINT_NAME> --region us-east-1 --rps 20 --duration 60
 """
-import argparse, asyncio, time, aiohttp
+import argparse, asyncio, json, time
+from concurrent.futures import ThreadPoolExecutor
+
+import boto3
+from botocore.config import Config
 
 PAYLOAD = {
     "model": "meta/llama-3.1-8b-instruct",
@@ -10,26 +15,40 @@ PAYLOAD = {
     "max_tokens": 100,
 }
 
-async def send_request(session, url, stats):
+def invoke(client, endpoint):
+    resp = client.invoke_endpoint(
+        EndpointName=endpoint,
+        ContentType="application/json",
+        Accept="application/json",
+        Body=json.dumps(PAYLOAD),
+    )
+    resp["Body"].read()
+
+async def send_request(loop, pool, client, endpoint, stats):
     t0 = time.monotonic()
     try:
-        async with session.post(f"{url}/v1/chat/completions", json=PAYLOAD) as r:
-            await r.read()
-            latency = time.monotonic() - t0
-            stats["ok"] += 1
-            stats["latencies"].append(latency)
+        await loop.run_in_executor(pool, invoke, client, endpoint)
+        stats["ok"] += 1
+        stats["latencies"].append(time.monotonic() - t0)
     except Exception:
         stats["err"] += 1
 
-async def main(url, rps, duration):
+async def main(endpoint, region, rps, duration):
     stats = {"ok": 0, "err": 0, "latencies": []}
     interval = 1.0 / rps
+    max_conc = max(rps * 30, 32)  # enough threads for ~30s of in-flight requests
+    client = boto3.client(
+        "sagemaker-runtime",
+        region_name=region,
+        config=Config(max_pool_connections=max_conc, retries={"max_attempts": 0}, read_timeout=120),
+    )
+    loop = asyncio.get_running_loop()
     end = time.monotonic() + duration
 
-    async with aiohttp.ClientSession() as session:
+    with ThreadPoolExecutor(max_workers=max_conc) as pool:
         tasks = []
         while time.monotonic() < end:
-            tasks.append(asyncio.create_task(send_request(session, url, stats)))
+            tasks.append(asyncio.create_task(send_request(loop, pool, client, endpoint, stats)))
             await asyncio.sleep(interval)
         await asyncio.gather(*tasks)
 
@@ -42,8 +61,9 @@ async def main(url, rps, duration):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("url", help="NIM base URL, e.g. http://localhost:8000")
+    p.add_argument("endpoint", help="SageMaker endpoint name, e.g. nim-demo")
+    p.add_argument("--region", default="us-east-1")
     p.add_argument("--rps", type=int, default=10, help="Requests per second")
     p.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
     args = p.parse_args()
-    asyncio.run(main(args.url, args.rps, args.duration))
+    asyncio.run(main(args.endpoint, args.region, args.rps, args.duration))

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Container entrypoint for SageMaker. SageMaker invokes `<image> serve`; the
+# argument is ignored. Starts NIM on :8000 and the Caddy shim on :8080, and
+# exits if either process dies so SageMaker replaces the instance.
+set -euo pipefail
+
+: "${NGC_API_KEY:?NGC_API_KEY must be set}"
+NIM_START_CMD="${NIM_START_CMD:-/opt/nvidia/nvidia_entrypoint.sh /opt/nim/start_server.sh}"
+
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+# shellcheck disable=SC2086  # intentional word splitting of the start command
+${NIM_START_CMD} &
+NIM_PID=$!
+
+trap 'kill -TERM "$CADDY_PID" "$NIM_PID" 2>/dev/null || true' TERM INT
+
+wait -n "$CADDY_PID" "$NIM_PID"
+STATUS=$?
+echo "A server process exited (status ${STATUS}); shutting down." >&2
+kill -TERM "$CADDY_PID" "$NIM_PID" 2>/dev/null || true
+exit "$STATUS"

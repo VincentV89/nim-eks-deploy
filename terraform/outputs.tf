@@ -1,11 +1,11 @@
-output "cluster_name" {
-  value = module.eks.cluster_name
+output "ecr_repository_url" {
+  value = aws_ecr_repository.nim.repository_url
 }
 
-output "cluster_endpoint" {
-  value = module.eks.cluster_endpoint
+output "endpoint_name" {
+  value = aws_sagemaker_endpoint.nim.name
 }
 
-output "configure_kubectl" {
-  value = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
+output "invoke_example" {
+  value = "aws sagemaker-runtime invoke-endpoint --region ${var.region} --endpoint-name ${aws_sagemaker_endpoint.nim.name} --content-type application/json --cli-binary-format raw-in-base64-out --body '{\"model\":\"${var.model_name}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}' /dev/stdout"
 }

@@ -3,7 +3,7 @@ on:
   pull_request:
     paths:
       - 'terraform/**'
-      - 'k8s/**'
+      - 'sagemaker/**'
       - 'scripts/**'
 
 permissions:
@@ -29,9 +29,9 @@ jobs:
           kiro-cli chat --no-interactive --trust-tools=read,grep \
             "Review all files in this repository for security and configuration issues. Check: \
              1. Terraform: overly permissive network access, public endpoint settings, encryption at rest \
-             2. K8s: GPU tolerations match Terraform node taints, HPA metrics are valid, ports are consistent \
-             3. Scripts: secret handling, Helm config correctness, error handling \
-             4. Cross-file consistency between terraform/, k8s/, and scripts/ \
+             2. SageMaker: container shim honours the /ping + /invocations contract on port 8080, autoscaling metrics are valid, IAM is least-privilege \
+             3. Scripts: secret handling, image build/push correctness, error handling \
+             4. Cross-file consistency between terraform/, sagemaker/, and scripts/ \
              Format your response in clean markdown." 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | sed 's/\x1b\[[?][0-9]*[a-zA-Z]//g' > kiro-review-raw.txt || true
           # Extract only the review content (lines starting with > or after the last > line)
           # Remove tool execution noise and keep just the final response
