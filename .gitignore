@@ -1,0 +1,9 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.auto.tfvars
+__pycache__/
+kiro-review-raw.txt
+kiro-review.md
