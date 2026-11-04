@@ -1,0 +1,27 @@
+# Maps the SageMaker inference contract (:8080 /ping, /invocations) onto NIM (:8000).
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness (200 only once the model is loaded)
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy localhost:8000
+	}
+
+	# SageMaker invoke -> OpenAI-compatible chat completions.
+	# flush_interval -1 keeps streaming (InvokeEndpointWithResponseStream) responsive.
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy localhost:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}
