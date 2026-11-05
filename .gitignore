@@ -13,3 +13,7 @@ kiro-review*.md
 
 # Task attachments
 .attachments/
+
+# Python
+__pycache__/
+*.pyc
