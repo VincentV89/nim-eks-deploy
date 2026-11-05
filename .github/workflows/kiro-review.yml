@@ -3,7 +3,7 @@ on:
   pull_request:
     paths:
       - 'terraform/**'
-      - 'k8s/**'
+      - 'sagemaker/**'
       - 'scripts/**'
 
 permissions:
@@ -28,10 +28,10 @@ jobs:
         run: |
           kiro-cli chat --no-interactive --trust-tools=read,grep \
             "Review all files in this repository for security and configuration issues. Check: \
-             1. Terraform: overly permissive network access, public endpoint settings, encryption at rest \
-             2. K8s: GPU tolerations match Terraform node taints, HPA metrics are valid, ports are consistent \
-             3. Scripts: secret handling, Helm config correctness, error handling \
-             4. Cross-file consistency between terraform/, k8s/, and scripts/ \
+             1. Terraform: least-privilege IAM for the SageMaker execution role, encryption at rest, secret handling \
+             2. SageMaker: container serves /ping and /invocations on port 8080, autoscaling metrics/dimensions are valid \
+             3. Scripts: secret handling, Docker/ECR push correctness, error handling \
+             4. Cross-file consistency between terraform/, sagemaker/, and scripts/ \
              Format your response in clean markdown." 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | sed 's/\x1b\[[?][0-9]*[a-zA-Z]//g' > kiro-review-raw.txt || true
           # Extract only the review content (lines starting with > or after the last > line)
           # Remove tool execution noise and keep just the final response
@@ -69,16 +69,22 @@ jobs:
           script: |
             const fs = require('fs');
             const review = fs.readFileSync('kiro-review.md', 'utf8');
-            const body = `## 🔍 Kiro Infrastructure Review\n\n${review}\n\n---\n*Automated review by [Kiro CLI headless mode](https://kiro.dev/docs/cli/headless/) • \`--trust-tools=read,grep\`*`;
+            const marker = '<!-- kiro-review -->';
+            const body = `${marker}\n## 🔍 Kiro Infrastructure Review\n\n${review}\n\n---\n*Automated review by [Kiro CLI headless mode](https://kiro.dev/docs/cli/headless/) • \`--trust-tools=read,grep\`*`;
 
-            // Find and delete previous Kiro review comments to avoid clutter
-            const comments = await github.rest.issues.listComments({
+            // Delete only previous reviews posted by this workflow: bot-authored
+            // AND carrying the hidden marker. Human comments are never touched.
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              per_page: 100,
             });
-            for (const comment of comments.data) {
-              if (comment.body.includes('Kiro Infrastructure Review')) {
+            for (const comment of comments) {
+              const isBot = comment.user?.type === 'Bot' && comment.user?.login === 'github-actions[bot]';
+              const text = comment.body || '';
+              // startsWith() also catches older reviews posted before the marker existed.
+              if (isBot && (text.includes(marker) || text.startsWith('## 🔍 Kiro Infrastructure Review'))) {
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
