@@ -3,6 +3,8 @@ terraform {
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 5.0" }
   }
+  # State is local by default. For anything long-lived, copy backend.tf.example
+  # to backend.tf to use an encrypted, locked S3 backend.
 }
 
 provider "aws" { region = var.region }
@@ -12,6 +14,9 @@ locals {
   # SageMaker cannot pull from nvcr.io directly, so the NIM image (plus a small
   # SageMaker compatibility shim, see sagemaker/Dockerfile) is mirrored into ECR.
   image_uri = "${aws_ecr_repository.nim.repository_url}:${var.image_tag}"
+
+  log_group_arn = "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/sagemaker/Endpoints/${local.name}"
+  use_vpc       = length(var.subnet_ids) > 0
 }
 
 data "aws_caller_identity" "current" {}
@@ -21,10 +26,25 @@ data "aws_partition" "current" {}
 resource "aws_ecr_repository" "nim" {
   name                 = local.name
   image_tag_mutability = "IMMUTABLE"
-  force_delete         = true
+  # Default false: `terraform destroy` refuses to delete a repo that still has
+  # images. Set ecr_force_delete = true for throwaway demo environments.
+  force_delete = var.ecr_force_delete
 
   image_scanning_configuration { scan_on_push = true }
-  encryption_configuration { encryption_type = "KMS" }
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = var.kms_key_arn # null = AWS-managed aws/ecr key
+  }
+}
+
+# --- NGC API key: Secrets Manager (value is set by scripts/deploy.sh) ---
+# Terraform only creates the secret *container*. deploy.sh writes the value with
+# `aws secretsmanager put-secret-value`, so the key never enters Terraform state
+# or the SageMaker model definition (DescribeModel only shows the secret ARN).
+resource "aws_secretsmanager_secret" "ngc" {
+  name_prefix = "${local.name}-ngc-api-key-"
+  description = "NVIDIA NGC API key used by the NIM container to download model weights."
+  kms_key_id  = var.kms_key_arn # null = AWS-managed aws/secretsmanager key
 }
 
 # --- IAM execution role for the SageMaker endpoint ---
@@ -61,6 +81,13 @@ data "aws_iam_policy_document" "sagemaker" {
   }
 
   statement {
+    sid       = "NgcSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.ngc.arn]
+  }
+
+  # Only this endpoint's log group (SageMaker writes to /aws/sagemaker/Endpoints/<name>).
+  statement {
     sid = "Logs"
     actions = [
       "logs:CreateLogGroup",
@@ -68,19 +95,40 @@ data "aws_iam_policy_document" "sagemaker" {
       "logs:DescribeLogStreams",
       "logs:PutLogEvents",
     ]
-    resources = ["arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/sagemaker/*"]
+    resources = [local.log_group_arn, "${local.log_group_arn}:*"]
   }
 
-  statement {
-    sid       = "Metrics"
-    actions   = ["cloudwatch:PutMetricData"]
-    resources = ["*"]
-    condition {
-      test     = "StringLike"
-      variable = "cloudwatch:namespace"
-      values   = ["/aws/sagemaker/*"]
+  # Customer-managed KMS key (optional) for the ECR image and the NGC secret.
+  dynamic "statement" {
+    for_each = var.kms_key_arn == null ? [] : [var.kms_key_arn]
+    content {
+      sid       = "Kms"
+      actions   = ["kms:Decrypt"]
+      resources = [statement.value]
     }
   }
+
+  # ENI management, only when the endpoint runs inside a VPC.
+  dynamic "statement" {
+    for_each = local.use_vpc ? [1] : []
+    content {
+      sid = "VpcEni"
+      actions = [
+        "ec2:CreateNetworkInterface",
+        "ec2:CreateNetworkInterfacePermission",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DeleteNetworkInterfacePermission",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeDhcpOptions",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+      ]
+      resources = ["*"]
+    }
+  }
+  # No cloudwatch:PutMetricData: SageMaker publishes GPUUtilization and
+  # invocation metrics itself, not through the execution role.
 }
 
 resource "aws_iam_role_policy" "sagemaker" {
@@ -91,18 +139,27 @@ resource "aws_iam_role_policy" "sagemaker" {
 
 # --- SageMaker model / endpoint ---
 resource "aws_sagemaker_model" "nim" {
-  # Name includes the image tag so a new image produces a new model and the
-  # endpoint config below is replaced (SageMaker models are immutable).
-  name               = "${local.name}-${replace(var.image_tag, "/[^a-zA-Z0-9-]/", "-")}"
+  # No explicit name: Terraform generates a unique one, so create_before_destroy
+  # never collides with the model it is replacing (SageMaker models are immutable).
   execution_role_arn = aws_iam_role.sagemaker.arn
 
   primary_container {
     image = local.image_uri
     environment = {
-      # NOTE: SageMaker container environment variables are visible via
-      # DescribeModel to principals with sagemaker:DescribeModel. Restrict that
-      # permission, or bake the key retrieval into the image entrypoint.
-      NGC_API_KEY = var.ngc_api_key
+      # launch.sh fetches the key from Secrets Manager at startup.
+      NGC_SECRET_ARN = aws_secretsmanager_secret.ngc.arn
+      AWS_REGION     = var.region
+    }
+  }
+
+  # Optional private networking. Egress must still reach NGC
+  # (e.g. NAT + egress allow-list for *.ngc.nvidia.com, *.nvcr.io) and
+  # Secrets Manager (NAT or a VPC interface endpoint).
+  dynamic "vpc_config" {
+    for_each = local.use_vpc ? [1] : []
+    content {
+      subnets            = var.subnet_ids
+      security_group_ids = var.security_group_ids
     }
   }
 
@@ -134,6 +191,8 @@ resource "aws_sagemaker_endpoint" "nim" {
 }
 
 # --- GPU-aware autoscaling (replaces the Kubernetes HPA + DCGM/Prometheus stack) ---
+# NOTE: changing instance_type on an autoscaled variant requires deregistering
+# the scalable target first (see README "Updating the endpoint").
 resource "aws_appautoscaling_target" "nim" {
   service_namespace  = "sagemaker"
   resource_id        = "endpoint/${aws_sagemaker_endpoint.nim.name}/variant/AllTraffic"

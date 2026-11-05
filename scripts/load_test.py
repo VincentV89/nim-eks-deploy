@@ -4,6 +4,7 @@ endpoint to trigger GPU autoscaling.
 Usage: python load_test.py <ENDPOINT_NAME> --region us-east-1 --rps 20 --duration 60
 """
 import argparse, asyncio, json, time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 import boto3
@@ -16,27 +17,37 @@ PAYLOAD = json.dumps({
 })
 
 def invoke(client, endpoint):
+    # Timer starts here (inside the worker thread), so latency excludes the
+    # time a request spent queued in the thread pool.
+    t0 = time.monotonic()
     r = client.invoke_endpoint(EndpointName=endpoint, ContentType="application/json", Body=PAYLOAD)
     r["Body"].read()
+    return time.monotonic() - t0
+
+def error_reason(exc):
+    # botocore ClientError -> service error code (ThrottlingException, ModelError, ...)
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+    return code or type(exc).__name__
 
 async def send_request(loop, pool, client, endpoint, stats):
-    t0 = time.monotonic()
     try:
-        await loop.run_in_executor(pool, invoke, client, endpoint)
+        latency = await loop.run_in_executor(pool, invoke, client, endpoint)
         stats["ok"] += 1
-        stats["latencies"].append(time.monotonic() - t0)
-    except Exception:
+        stats["latencies"].append(latency)
+    except Exception as exc:
         stats["err"] += 1
+        stats["errors"][error_reason(exc)] += 1
 
 async def main(endpoint, region, rps, duration, concurrency):
-    stats = {"ok": 0, "err": 0, "latencies": []}
+    stats = {"ok": 0, "err": 0, "latencies": [], "errors": Counter()}
     interval = 1.0 / rps
     client = boto3.client(
         "sagemaker-runtime", region_name=region,
         config=Config(max_pool_connections=concurrency, retries={"max_attempts": 0}, read_timeout=120),
     )
     loop = asyncio.get_running_loop()
-    end = time.monotonic() + duration
+    start = time.monotonic()
+    end = start + duration
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         tasks = []
@@ -44,13 +55,16 @@ async def main(endpoint, region, rps, duration, concurrency):
             tasks.append(asyncio.create_task(send_request(loop, pool, client, endpoint, stats)))
             await asyncio.sleep(interval)
         await asyncio.gather(*tasks)
+    elapsed = time.monotonic() - start
 
     lats = sorted(stats["latencies"])
     print(f"\n{'='*50}")
     print(f"Requests:  {stats['ok']} ok / {stats['err']} errors")
+    for reason, n in stats["errors"].most_common():
+        print(f"  {reason}: {n}")
     if lats:
         print(f"Latency:   p50={lats[len(lats)//2]:.2f}s  p95={lats[int(len(lats)*0.95)]:.2f}s  p99={lats[int(len(lats)*0.99)]:.2f}s")
-        print(f"Throughput: {stats['ok']/duration:.1f} req/s")
+        print(f"Throughput: {stats['ok']/elapsed:.1f} req/s (over {elapsed:.1f}s)")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

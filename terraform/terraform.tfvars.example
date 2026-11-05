@@ -2,5 +2,13 @@ region        = "us-east-1"
 instance_type = "ml.g5.xlarge"
 min_instances = 1
 max_instances = 3
-# Prefer: export TF_VAR_ngc_api_key=nvapi-...  (keeps the key out of files)
-# ngc_api_key = "nvapi-..."
+
+# image_tag is written to image.auto.tfvars by scripts/deploy.sh.
+# The NGC API key is NOT a Terraform variable: deploy.sh stores it in
+# Secrets Manager so it never lands in Terraform state.
+
+# Optional hardening
+# kms_key_arn        = "arn:aws:kms:us-east-1:123456789012:key/..."
+# subnet_ids         = ["subnet-aaa", "subnet-bbb"]
+# security_group_ids = ["sg-ccc"]
+# ecr_force_delete   = true   # demo environments only

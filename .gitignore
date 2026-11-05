@@ -1,0 +1,15 @@
+# Terraform state, plans and local variable files (may contain sensitive data)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.auto.tfvars
+crash.log
+
+# Kiro review workflow artefacts
+kiro-review*.txt
+kiro-review*.md
+
+# Task attachments
+.attachments/
