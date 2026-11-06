@@ -1,0 +1,24 @@
+{
+	auto_https off
+	admin localhost:2019
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness probe
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy localhost:8000
+	}
+
+	# SageMaker inference -> NIM OpenAI-compatible chat completions
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy localhost:8000 {
+			flush_interval -1 # stream tokens through for InvokeEndpointWithResponseStream
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
