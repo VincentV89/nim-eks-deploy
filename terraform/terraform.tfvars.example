@@ -1,3 +1,4 @@
-region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+region         = "us-east-1"
+ngc_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:nim-demo/ngc-api-key-AbCdEf"
+min_instances  = 1
+max_instances  = 3
