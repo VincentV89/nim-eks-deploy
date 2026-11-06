@@ -1,3 +1,6 @@
 region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+instance_type = "ml.g5.xlarge"
+min_instances = 1
+max_instances = 3
+# Prefer `export TF_VAR_ngc_api_key=...` over writing the key to this file.
+# ngc_api_key = "nvapi-..."
