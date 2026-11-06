@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# SageMaker entrypoint: start NIM in the background, then the SageMaker proxy.
+set -euo pipefail
+
+# SageMaker passes "serve" as the first argument; ignore it.
+[[ "${1:-}" == "serve" ]] && shift
+
+NIM_START="${NIM_START_CMD:-/opt/nim/start_server.sh}"
+"${NIM_START}" &
+NIM_PID=$!
+
+python3 /opt/sagemaker/sagemaker_proxy.py &
+PROXY_PID=$!
+
+trap 'kill -TERM "${NIM_PID}" "${PROXY_PID}" 2>/dev/null || true' TERM INT
+
+# Exit (and let SageMaker replace the instance) if either process dies.
+wait -n "${NIM_PID}" "${PROXY_PID}"
+status=$?
+kill -TERM "${NIM_PID}" "${PROXY_PID}" 2>/dev/null || true
+exit "${status}"
