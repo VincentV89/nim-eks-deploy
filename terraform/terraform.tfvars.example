@@ -1,3 +1,7 @@
-region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+region                 = "us-east-1"
+instance_type          = "ml.g5.xlarge"
+min_instances          = 1
+max_instances          = 3
+gpu_target_utilization = 70
+# ngc_api_key: do NOT put it here — export TF_VAR_ngc_api_key instead
+# (scripts/deploy.sh does this for you).
