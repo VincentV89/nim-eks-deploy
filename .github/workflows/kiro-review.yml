@@ -72,6 +72,7 @@ jobs:
             const body = `## 🔍 Kiro Infrastructure Review\n\n${review}\n\n---\n*Automated review by [Kiro CLI headless mode](https://kiro.dev/docs/cli/headless/) • \`--trust-tools=read,grep\`*`;
 
             // Find and delete previous Kiro review comments to avoid clutter
+            /*
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -86,6 +87,7 @@ jobs:
                 });
               }
             }
+            */
 
             // Post fresh comment
             await github.rest.issues.createComment({
