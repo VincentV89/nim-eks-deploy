@@ -1,3 +1,5 @@
 region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+instance_type = "ml.g5.xlarge"
+min_instances = 1
+max_instances = 3
+# ngc_api_key is passed via TF_VAR_ngc_api_key (see scripts/deploy.sh) — do not commit it.
