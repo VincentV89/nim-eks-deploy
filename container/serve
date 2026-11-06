@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Entrypoint: start NIM on :8000 and the SageMaker route shim on :8080.
+set -euo pipefail
+
+if [[ -x /opt/nim/start_server.sh ]]; then
+  NIM_START=/opt/nim/start_server.sh
+elif [[ -x /opt/nim/start-server.sh ]]; then
+  NIM_START=/opt/nim/start-server.sh
+else
+  echo "Cannot find NIM start script under /opt/nim" >&2
+  exit 1
+fi
+
+"${NIM_START}" &
+NIM_PID=$!
+
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+trap 'kill -TERM "${NIM_PID}" "${CADDY_PID}" 2>/dev/null || true' TERM INT
+
+# Exit (so SageMaker replaces the instance) if either process dies.
+wait -n "${NIM_PID}" "${CADDY_PID}"
+status=$?
+kill -TERM "${NIM_PID}" "${CADDY_PID}" 2>/dev/null || true
+exit "${status}"

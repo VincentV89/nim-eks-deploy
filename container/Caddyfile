@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness (503 until the engine is loaded)
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy localhost:8000
+	}
+
+	# SageMaker inference -> NIM OpenAI-compatible chat completions
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy localhost:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}
