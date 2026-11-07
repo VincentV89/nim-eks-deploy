@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# SageMaker entrypoint: start NIM on :8000 and the SageMaker proxy on :8080.
+set -euo pipefail
+
+: "${NIM_CMD:?NIM_CMD not set - rebuild the image with scripts/deploy.sh}"
+
+if [[ -z "${NGC_API_KEY:-}" && -n "${NGC_API_KEY_SECRET_ARN:-}" ]]; then
+  echo "[shim] fetching NGC API key from Secrets Manager"
+  NGC_API_KEY="$(aws secretsmanager get-secret-value \
+    --secret-id "${NGC_API_KEY_SECRET_ARN}" \
+    --query SecretString --output text)"
+  export NGC_API_KEY
+fi
+
+echo "[shim] starting NIM: ${NIM_CMD}"
+bash -c "exec ${NIM_CMD}" &
+nim_pid=$!
+
+echo "[shim] starting SageMaker proxy on :8080"
+caddy run --config /opt/sagemaker-shim/Caddyfile --adapter caddyfile &
+proxy_pid=$!
+
+trap 'kill -TERM "${nim_pid}" "${proxy_pid}" 2>/dev/null || true' TERM INT
+
+# If either process dies, exit so SageMaker replaces the instance
+wait -n "${nim_pid}" "${proxy_pid}"
+status=$?
+echo "[shim] a child process exited (status ${status}); shutting down"
+kill -TERM "${nim_pid}" "${proxy_pid}" 2>/dev/null || true
+exit "${status}"

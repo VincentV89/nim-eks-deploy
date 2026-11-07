@@ -1,0 +1,23 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy localhost:{$NIM_SERVER_PORT:8000}
+	}
+
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy localhost:{$NIM_SERVER_PORT:8000} {
+			# pass streamed tokens through immediately (InvokeEndpointWithResponseStream)
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}
