@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Entrypoint for the SageMaker NIM image: starts NIM on :8000 and Caddy on :8080.
+# SageMaker passes "serve" as the first argument; it is ignored.
+set -euo pipefail
+
+: "${NGC_API_KEY:?NGC_API_KEY must be set in the SageMaker model environment}"
+
+# Locate the NIM launcher (path differs slightly across NIM releases).
+NIM_START="${NIM_START_CMD:-}"
+if [[ -z "${NIM_START}" ]]; then
+  for candidate in /opt/nim/start_server.sh /opt/nim/start-server.sh; do
+    if [[ -x "${candidate}" ]]; then NIM_START="${candidate}"; break; fi
+  done
+fi
+if [[ -z "${NIM_START}" ]]; then
+  echo "ERROR: could not find NIM start script; set NIM_START_CMD" >&2
+  exit 1
+fi
+
+if [[ -x /opt/nvidia/nvidia_entrypoint.sh ]]; then
+  /opt/nvidia/nvidia_entrypoint.sh "${NIM_START}" &
+else
+  "${NIM_START}" &
+fi
+NIM_PID=$!
+
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+trap 'kill -TERM "${NIM_PID}" "${CADDY_PID}" 2>/dev/null || true' TERM INT
+
+# Exit (and let SageMaker replace the instance) if either process dies.
+wait -n "${NIM_PID}" "${CADDY_PID}"
+status=$?
+kill -TERM "${NIM_PID}" "${CADDY_PID}" 2>/dev/null || true
+exit "${status}"

@@ -1,54 +1,35 @@
 #!/usr/bin/env bash
-# Deploy NIM + GPU monitoring stack onto an existing EKS cluster.
-# Usage: ./deploy.sh <NGC_API_KEY>
+# Build the SageMaker NIM image, push it to ECR, and deploy the SageMaker endpoint.
+# Usage: ./scripts/deploy.sh <NGC_API_KEY> [image-tag]
 set -euo pipefail
 
-NGC_KEY="${1:?Usage: ./deploy.sh <NGC_API_KEY>}"
+NGC_KEY="${1:?Usage: ./scripts/deploy.sh <NGC_API_KEY> [image-tag]}"
+TAG="${2:-$(date +%Y%m%d%H%M%S)}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TF_DIR="${ROOT}/terraform"
+export TF_VAR_ngc_api_key="${NGC_KEY}"
+export TF_VAR_image_tag="${TAG}"
 
-echo "=== 1/4  Creating NGC image pull secret ==="
-kubectl create secret docker-registry ngc-secret \
-  --docker-server=nvcr.io \
-  --docker-username='$oauthtoken' \
-  --docker-password="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+echo "=== 1/4  Creating ECR repository ==="
+terraform -chdir="${TF_DIR}" init -input=false
+terraform -chdir="${TF_DIR}" apply -input=false -auto-approve -target=aws_ecr_repository.nim
+REPO="$(terraform -chdir="${TF_DIR}" output -raw ecr_repository_url)"
+REGION="$(echo "${REPO}" | cut -d. -f4)"
+REGISTRY="${REPO%%/*}"
 
-# Also store the key so NIM can download model weights at runtime
-kubectl create secret generic ngc-secret \
-  --from-literal=NGC_API_KEY="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+echo "=== 2/4  Logging in to nvcr.io and ECR ==="
+echo "${NGC_KEY}" | docker login nvcr.io --username '$oauthtoken' --password-stdin
+aws ecr get-login-password --region "${REGION}" | docker login "${REGISTRY}" --username AWS --password-stdin
 
-echo "=== 2/4  Installing NVIDIA DCGM Exporter (GPU metrics) ==="
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
-helm upgrade --install dcgm-exporter nvidia/dcgm-exporter \
-  --namespace monitoring --create-namespace \
-  --set tolerations[0].key=nvidia.com/gpu \
-  --set tolerations[0].operator=Exists \
-  --set tolerations[0].effect=NoSchedule
+echo "=== 3/4  Building and pushing SageMaker NIM image (${REPO}:${TAG}) ==="
+docker build --platform linux/amd64 -t "${REPO}:${TAG}" "${ROOT}/sagemaker"
+docker push "${REPO}:${TAG}"
 
-echo "=== 3/4  Installing Prometheus + Adapter (metrics pipeline for HPA) ==="
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+echo "=== 4/4  Deploying SageMaker endpoint + autoscaling ==="
+terraform -chdir="${TF_DIR}" apply -input=false -auto-approve
 
-# Prometheus — scrape DCGM metrics
-helm upgrade --install prometheus prometheus-community/prometheus \
-  --namespace monitoring --create-namespace \
-  --set server.persistentVolume.enabled=false \
-  --set alertmanager.enabled=false
-
-# Prometheus Adapter — expose DCGM metrics to Kubernetes HPA
-helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
-  --namespace monitoring \
-  --set prometheus.url=http://prometheus-server.monitoring.svc \
-  --set prometheus.port=80 \
-  --set "rules.custom[0].seriesQuery=DCGM_FI_DEV_GPU_UTIL" \
-  --set "rules.custom[0].metricsQuery=avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)" \
-  --set "rules.custom[0].resources.overrides.namespace.resource=namespace" \
-  --set "rules.custom[0].resources.overrides.pod.resource=pod"
-
-echo "=== 4/4  Deploying NIM ==="
-kubectl apply -f k8s/
-
+ENDPOINT="$(terraform -chdir="${TF_DIR}" output -raw endpoint_name)"
 echo ""
-echo "Done! NIM is starting (TensorRT engine build takes ~2-5 min on first boot)."
-echo "Watch progress:  kubectl logs -f deployment/nim-llm"
-echo "Check HPA:       kubectl get hpa nim-llm -w"
-echo "Get endpoint:    kubectl get svc nim-llm -w"
+echo "Done! Endpoint '${ENDPOINT}' is InService (first boot builds the TensorRT engine)."
+echo "Check status:  aws sagemaker describe-endpoint --endpoint-name ${ENDPOINT} --region ${REGION} --query EndpointStatus"
+echo "Logs:          aws logs tail /aws/sagemaker/Endpoints/${ENDPOINT} --follow --region ${REGION}"
