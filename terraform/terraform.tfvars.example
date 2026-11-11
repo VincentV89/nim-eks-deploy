@@ -1,3 +1,5 @@
 region        = "us-east-1"
-gpu_min_nodes = 1
-gpu_max_nodes = 3
+min_instances = 1
+max_instances = 3
+# Prefer `export TF_VAR_ngc_api_key=...` over writing the key to disk.
+# ngc_api_key = "nvapi-..."
