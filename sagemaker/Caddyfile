@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness (200 only once the model is loaded)
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# SageMaker InvokeEndpoint -> OpenAI-compatible chat completions
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1 # pass streamed tokens through immediately
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

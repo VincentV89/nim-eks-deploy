@@ -1,11 +1,37 @@
 variable "region" {
+  type    = string
   default = "us-east-1"
 }
 
-variable "gpu_min_nodes" {
+variable "ngc_api_key" {
+  description = "NVIDIA NGC API key (stored in Secrets Manager; NIM uses it to download model weights)"
+  type        = string
+  sensitive   = true
+}
+
+variable "image_tag" {
+  description = "Tag of the NIM SageMaker image in ECR (pushed by scripts/deploy.sh)"
+  type        = string
+  default     = "latest"
+}
+
+variable "instance_type" {
+  type    = string
+  default = "ml.g5.xlarge"
+}
+
+variable "min_instances" {
+  type    = number
   default = 1
 }
 
-variable "gpu_max_nodes" {
+variable "max_instances" {
+  type    = number
   default = 3
+}
+
+variable "gpu_util_target" {
+  description = "Target average GPU utilization (%) for autoscaling"
+  type        = number
+  default     = 70
 }
