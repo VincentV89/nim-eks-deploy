@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# SageMaker health check — only healthy once the model is loaded.
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# InvokeEndpoint / InvokeEndpointWithResponseStream -> OpenAI chat completions.
+	# Send an OpenAI-style body; add "stream": true with the streaming API.
+	@invoke path /invocations /invocations-response-stream
+	handle @invoke {
+		rewrite * /v1/chat/completions
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
