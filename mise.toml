@@ -1,0 +1,18 @@
+[tools]
+terraform = "1.9"
+shellcheck = "latest"
+
+[tasks.build]
+description = "Validate Terraform configuration"
+run = [
+  "terraform -chdir=terraform init -backend=false -input=false",
+  "terraform -chdir=terraform validate",
+]
+
+[tasks.lint]
+description = "Format check Terraform, lint shell scripts, syntax-check Python"
+run = [
+  "terraform fmt -check -recursive terraform",
+  "shellcheck scripts/deploy.sh sagemaker/serve",
+  "python3 -m py_compile scripts/load_test.py",
+]
