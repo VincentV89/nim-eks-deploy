@@ -1,37 +1,52 @@
 """
-Load test for NIM — fires concurrent chat completions to trigger GPU autoscaling.
-Usage: python load_test.py http://<NIM_URL>:8000 --rps 20 --duration 60
+Load test for NIM on SageMaker — fires concurrent chat completions to trigger GPU autoscaling.
+Requests are signed with your AWS credentials (SigV4) via boto3.
+Usage: python load_test.py nim-demo --rps 20 --duration 60 [--region us-east-1]
 """
-import argparse, asyncio, time, aiohttp
+import argparse, asyncio, json, time
+from concurrent.futures import ThreadPoolExecutor
 
-PAYLOAD = {
+import boto3
+from botocore.config import Config
+
+PAYLOAD = json.dumps({
     "model": "meta/llama-3.1-8b-instruct",
     "messages": [{"role": "user", "content": "Explain KV cache in transformer inference in 2 sentences."}],
     "max_tokens": 100,
-}
+})
 
-async def send_request(session, url, stats):
+def invoke(client, endpoint):
+    r = client.invoke_endpoint(EndpointName=endpoint, ContentType="application/json", Body=PAYLOAD)
+    r["Body"].read()
+
+async def send_request(client, endpoint, stats):
     t0 = time.monotonic()
     try:
-        async with session.post(f"{url}/v1/chat/completions", json=PAYLOAD) as r:
-            await r.read()
-            latency = time.monotonic() - t0
-            stats["ok"] += 1
-            stats["latencies"].append(latency)
+        await asyncio.to_thread(invoke, client, endpoint)
+        stats["ok"] += 1
+        stats["latencies"].append(time.monotonic() - t0)
     except Exception:
         stats["err"] += 1
 
-async def main(url, rps, duration):
+async def main(endpoint, region, rps, duration):
     stats = {"ok": 0, "err": 0, "latencies": []}
     interval = 1.0 / rps
     end = time.monotonic() + duration
+    client = boto3.client(
+        "sagemaker-runtime",
+        region_name=region,
+        config=Config(max_pool_connections=max(rps * 10, 10), retries={"max_attempts": 1}, read_timeout=120),
+    )
+    # Size the default thread pool so in-flight requests aren't capped by CPU count.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=max(rps * 10, 10))
+    )
 
-    async with aiohttp.ClientSession() as session:
-        tasks = []
-        while time.monotonic() < end:
-            tasks.append(asyncio.create_task(send_request(session, url, stats)))
-            await asyncio.sleep(interval)
-        await asyncio.gather(*tasks)
+    tasks = []
+    while time.monotonic() < end:
+        tasks.append(asyncio.create_task(send_request(client, endpoint, stats)))
+        await asyncio.sleep(interval)
+    await asyncio.gather(*tasks)
 
     lats = sorted(stats["latencies"])
     print(f"\n{'='*50}")
@@ -42,8 +57,9 @@ async def main(url, rps, duration):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("url", help="NIM base URL, e.g. http://localhost:8000")
+    p.add_argument("endpoint", help="SageMaker endpoint name, e.g. nim-demo")
+    p.add_argument("--region", default=None, help="AWS region (defaults to your AWS config)")
     p.add_argument("--rps", type=int, default=10, help="Requests per second")
     p.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
     args = p.parse_args()
-    asyncio.run(main(args.url, args.rps, args.duration))
+    asyncio.run(main(args.endpoint, args.region, args.rps, args.duration))

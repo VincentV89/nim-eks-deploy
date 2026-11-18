@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Entrypoint for SageMaker hosting. SageMaker runs `docker run <image> serve`;
+# the argument is ignored. Starts NIM on :8000 and the SageMaker proxy on :8080.
+set -euo pipefail
+
+export NIM_SERVER_PORT="${NIM_SERVER_PORT:-8000}"
+NIM_START_CMD="${NIM_START_CMD:-/opt/nvidia/nvidia_entrypoint.sh /opt/nim/start_server.sh}"
+
+# shellcheck disable=SC2086 # intentional word splitting of the start command
+${NIM_START_CMD} &
+nim_pid=$!
+
+caddy run --config /opt/sagemaker/Caddyfile --adapter caddyfile &
+proxy_pid=$!
+
+trap 'kill -TERM "${nim_pid}" "${proxy_pid}" 2>/dev/null || true' TERM INT
+
+# Exit (and let SageMaker replace the instance) if either process dies.
+wait -n "${nim_pid}" "${proxy_pid}"
+status=$?
+kill -TERM "${nim_pid}" "${proxy_pid}" 2>/dev/null || true
+exit "${status}"
