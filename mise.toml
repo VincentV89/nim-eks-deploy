@@ -1,0 +1,18 @@
+[tools]
+terraform = "1.17.2"
+shellcheck = "0.11.0"
+
+[tasks.build]
+description = "Validate Terraform (no backend / no AWS credentials needed)"
+run = [
+  "terraform -chdir=terraform init -backend=false -input=false",
+  "terraform -chdir=terraform validate",
+]
+
+[tasks.lint]
+description = "Static checks for Terraform, shell and Python"
+run = [
+  "terraform -chdir=terraform fmt -check -recursive",
+  "shellcheck scripts/deploy.sh container/serve",
+  "python3 -m py_compile scripts/load_test.py scripts/invoke.py",
+]
