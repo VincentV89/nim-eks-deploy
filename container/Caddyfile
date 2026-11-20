@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy localhost:8000
+	}
+
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy localhost:8000 {
+			# Long generations / streaming responses
+			flush_interval -1
+			transport http {
+				response_header_timeout 600s
+			}
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}

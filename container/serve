@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# SageMaker entrypoint: start the Caddy shim on :8080, then run NIM on :8000.
+set -euo pipefail
+
+caddy run --config /opt/sagemaker/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+trap 'kill "${CADDY_PID}" 2>/dev/null || true' EXIT
+
+# Locate the NIM start script (name differs across NIM releases); allow override.
+NIM_START_CMD="${NIM_START_CMD:-}"
+if [[ -z "${NIM_START_CMD}" ]]; then
+  for candidate in /opt/nim/start_server.sh /opt/nim/start-server.sh; do
+    if [[ -x "${candidate}" ]]; then
+      NIM_START_CMD="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${NIM_START_CMD}" ]]; then
+  echo "ERROR: NIM start script not found; set NIM_START_CMD" >&2
+  exit 1
+fi
+
+if [[ -x /opt/nvidia/nvidia_entrypoint.sh ]]; then
+  /opt/nvidia/nvidia_entrypoint.sh "${NIM_START_CMD}"
+else
+  "${NIM_START_CMD}"
+fi
