@@ -1,0 +1,25 @@
+# Maps the SageMaker inference contract onto the NIM OpenAI-compatible API.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# SageMaker health check -> NIM readiness (fails until the engine is loaded)
+	handle /ping {
+		rewrite * /v1/health/ready
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# SageMaker InvokeEndpoint -> chat completions (supports "stream": true)
+	handle /invocations {
+		rewrite * /v1/chat/completions
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}

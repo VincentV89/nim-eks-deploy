@@ -1,54 +1,44 @@
 #!/usr/bin/env bash
-# Deploy NIM + GPU monitoring stack onto an existing EKS cluster.
-# Usage: ./deploy.sh <NGC_API_KEY>
+# Build the SageMaker-compatible NIM image, push it to ECR, and deploy the
+# SageMaker real-time endpoint with GPU autoscaling.
+# Usage: ./scripts/deploy.sh <NGC_API_KEY> [image-tag]
 set -euo pipefail
 
-NGC_KEY="${1:?Usage: ./deploy.sh <NGC_API_KEY>}"
+NGC_KEY="${1:?Usage: ./scripts/deploy.sh <NGC_API_KEY> [image-tag]}"
+IMAGE_TAG="${2:-latest}"
+NIM_IMAGE="${NIM_IMAGE:-nvcr.io/nim/meta/llama-3.1-8b-instruct:latest}"
 
-echo "=== 1/4  Creating NGC image pull secret ==="
-kubectl create secret docker-registry ngc-secret \
-  --docker-server=nvcr.io \
-  --docker-username='$oauthtoken' \
-  --docker-password="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TF_DIR="${REPO_ROOT}/terraform"
 
-# Also store the key so NIM can download model weights at runtime
-kubectl create secret generic ngc-secret \
-  --from-literal=NGC_API_KEY="${NGC_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
+# Keep the key out of argv/state files on disk where possible.
+export TF_VAR_ngc_api_key="${NGC_KEY}"
+export TF_VAR_image_tag="${IMAGE_TAG}"
 
-echo "=== 2/4  Installing NVIDIA DCGM Exporter (GPU metrics) ==="
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
-helm upgrade --install dcgm-exporter nvidia/dcgm-exporter \
-  --namespace monitoring --create-namespace \
-  --set tolerations[0].key=nvidia.com/gpu \
-  --set tolerations[0].operator=Exists \
-  --set tolerations[0].effect=NoSchedule
+echo "=== 1/4  Creating ECR repository ==="
+terraform -chdir="${TF_DIR}" init -input=false
+terraform -chdir="${TF_DIR}" apply -input=false -auto-approve -target=aws_ecr_repository.nim
+ECR_URL="$(terraform -chdir="${TF_DIR}" output -raw ecr_repository_url)"
+REGION="$(echo "${ECR_URL}" | cut -d. -f4)"
+REGISTRY="${ECR_URL%%/*}"
 
-echo "=== 3/4  Installing Prometheus + Adapter (metrics pipeline for HPA) ==="
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+echo "=== 2/4  Pulling NIM image from NGC ==="
+printf '%s' "${NGC_KEY}" | docker login nvcr.io --username '$oauthtoken' --password-stdin
+docker pull --platform linux/amd64 "${NIM_IMAGE}"
 
-# Prometheus — scrape DCGM metrics
-helm upgrade --install prometheus prometheus-community/prometheus \
-  --namespace monitoring --create-namespace \
-  --set server.persistentVolume.enabled=false \
-  --set alertmanager.enabled=false
+echo "=== 3/4  Building SageMaker wrapper image and pushing to ECR ==="
+aws ecr get-login-password --region "${REGION}" | docker login "${REGISTRY}" --username AWS --password-stdin
+docker build --platform linux/amd64 \
+  --build-arg NIM_IMAGE="${NIM_IMAGE}" \
+  -t "${ECR_URL}:${IMAGE_TAG}" "${REPO_ROOT}/docker"
+docker push "${ECR_URL}:${IMAGE_TAG}"
 
-# Prometheus Adapter — expose DCGM metrics to Kubernetes HPA
-helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
-  --namespace monitoring \
-  --set prometheus.url=http://prometheus-server.monitoring.svc \
-  --set prometheus.port=80 \
-  --set "rules.custom[0].seriesQuery=DCGM_FI_DEV_GPU_UTIL" \
-  --set "rules.custom[0].metricsQuery=avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)" \
-  --set "rules.custom[0].resources.overrides.namespace.resource=namespace" \
-  --set "rules.custom[0].resources.overrides.pod.resource=pod"
+echo "=== 4/4  Deploying SageMaker endpoint (this waits until InService) ==="
+terraform -chdir="${TF_DIR}" apply -input=false -auto-approve
 
-echo "=== 4/4  Deploying NIM ==="
-kubectl apply -f k8s/
-
+ENDPOINT="$(terraform -chdir="${TF_DIR}" output -raw endpoint_name)"
 echo ""
-echo "Done! NIM is starting (TensorRT engine build takes ~2-5 min on first boot)."
-echo "Watch progress:  kubectl logs -f deployment/nim-llm"
-echo "Check HPA:       kubectl get hpa nim-llm -w"
-echo "Get endpoint:    kubectl get svc nim-llm -w"
+echo "Done! Endpoint '${ENDPOINT}' is InService."
+echo "Logs:     aws logs tail /aws/sagemaker/Endpoints/${ENDPOINT} --follow --region ${REGION}"
+echo "Scaling:  aws application-autoscaling describe-scaling-activities --service-namespace sagemaker --region ${REGION}"
+echo "Test:     python scripts/load_test.py --sagemaker-endpoint ${ENDPOINT} --region ${REGION} --rps 1 --duration 5"
